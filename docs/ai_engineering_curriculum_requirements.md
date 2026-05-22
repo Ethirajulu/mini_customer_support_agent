@@ -81,8 +81,8 @@ You'll feel the rawness of LLMs — what changes when you tweak the system promp
 
 ### Tasks
 
-1. `npx create-next-app@latest mini-customer-support-agent --typescript --tailwind --app`
-2. `npm install @anthropic-ai/sdk ai`
+1. `npx create-next-app@latest mini-customer-support-agent --typescript --tailwind --app --use-pnpm`
+2. `pnpm install @anthropic-ai/sdk ai`
 3. Sign up at console.anthropic.com, get an API key, add to `.env.local` as `ANTHROPIC_API_KEY`
 4. Generate 15–20 help articles as `.md` files in `content/help-articles/` (ask Claude to write them — topics like "How to refund an order", "Tracking your shipment", "Cancelling a subscription", etc.)
 5. Build `/api/chat/route.ts`:
@@ -147,14 +147,14 @@ RAG is the most-asked-about AI skill in 2026 interviews. It's also the foundatio
    );
    create index on articles using ivfflat (embedding vector_cosine_ops);
    ```
-3. `npm install openai @supabase/supabase-js`
+3. `pnpm install openai @supabase/supabase-js`
 4. Write `scripts/embed-articles.ts`:
    - Read each markdown file from `content/help-articles/`
    - Chunk by paragraph if the article is > 800 tokens (start simple)
    - Embed each chunk via OpenAI's `text-embedding-3-small`
    - Insert into Supabase
    - Make this idempotent (delete + reinsert per slug)
-5. Add `npm run embed` script
+5. Add `pnpm run embed` script
 6. Update `/api/chat/route.ts`:
    - Take the latest user message
    - Embed it
@@ -168,7 +168,7 @@ RAG is the most-asked-about AI skill in 2026 interviews. It's also the foundatio
 - ✅ You can scale to 100s of articles without the prompt growing
 - ✅ Each response shows which articles were used
 - ✅ You can point to at least 2 cases where retrieval picked the wrong article — and you understand why
-- ✅ `npm run embed` can rebuild the vector DB from scratch in < 1 minute
+- ✅ `pnpm run embed` can rebuild the vector DB from scratch in < 1 minute
 
 ### Learning goals
 
@@ -316,7 +316,7 @@ This is the hardest part of AI engineering and the most under-taught. In intervi
 
 ### Acceptance criteria
 
-- ✅ `npm run eval` produces a scored markdown report
+- ✅ `pnpm run eval` produces a scored markdown report
 - ✅ You can point to a specific case: "this used to fail because X, I fixed it by Y, now it passes"
 - ✅ LangFuse shows traces for every chat (including manual UI ones, not just eval runs)
 - ✅ You have an **interview demo**: "here's my agent, here's how I measure it, here's a regression I caught and fixed"
@@ -351,7 +351,7 @@ This is the hardest part of AI engineering and the most under-taught. In intervi
 - [ ] `npx create-next-app@latest mini_customer_support_agent --typescript --tailwind --app`
 - [ ] Sign up at console.anthropic.com, get an API key
 - [ ] Add $5 of credits (free tier covers most of Phase 1)
-- [ ] `npm install @anthropic-ai/sdk ai`
+- [ ] `pnpm install @anthropic-ai/sdk ai`
 - [ ] Write `app/api/chat/route.ts` calling Claude with a hardcoded "you are a helpful assistant" system prompt
 - [ ] Hit it with curl. See a streamed response in the terminal.
 - [ ] Commit. Push to GitHub.
