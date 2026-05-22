@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
+import { SUPPORT_REFUSAL } from "@/lib/prompts";
 
 export default function Home() {
   const { messages, sendMessage, status, error, stop } = useChat({
@@ -47,17 +48,42 @@ export default function Home() {
             <EmptyState onPick={(prompt) => sendMessage({ text: prompt })} />
           )}
 
-          {messages.map((message) => (
-            <Message key={message.id} role={message.role}>
-              {message.parts.map((part, i) =>
-                part.type === "text" ? (
+          {messages.map((message) => {
+            const textParts = message.parts.filter((p) => p.type === "text");
+            const sourcesPart = message.parts.find(
+              (p) => p.type === "data-sources",
+            ) as
+              | {
+                  type: "data-sources";
+                  data: {
+                    items: { slug: string; title: string; distance: number }[];
+                  };
+                }
+              | undefined;
+
+            // Suppress sources when the assistant's answer IS the refusal
+            // template — retrieval ran but didn't help, so showing sources
+            // would just confuse the user.
+            const fullText = textParts
+              .map((p) => (p.type === "text" ? p.text : ""))
+              .join("");
+            const isRefusal = fullText.includes(SUPPORT_REFUSAL);
+
+            return (
+              <Message key={message.id} role={message.role}>
+                {textParts.map((part, i) => (
                   <span key={i} className="whitespace-pre-wrap">
-                    {part.text}
+                    {part.type === "text" ? part.text : null}
                   </span>
-                ) : null,
-              )}
-            </Message>
-          ))}
+                ))}
+                {sourcesPart &&
+                  message.role === "assistant" &&
+                  !isRefusal && (
+                    <Sources items={sourcesPart.data.items} />
+                  )}
+              </Message>
+            );
+          })}
 
           {status === "submitted" && (
             <Message role="assistant">
@@ -135,6 +161,34 @@ function TypingDots() {
       <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-zinc-400 [animation-delay:-0.15s]" />
       <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-zinc-400" />
     </span>
+  );
+}
+
+function Sources({
+  items,
+}: {
+  items: { slug: string; title: string; distance: number }[];
+}) {
+  if (items.length === 0) return null;
+  return (
+    <div className="mt-3 border-t border-zinc-200 pt-2 text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+      <span className="font-medium text-zinc-600 dark:text-zinc-300">
+        Sources
+      </span>
+      <ul className="mt-1 flex flex-col gap-0.5">
+        {items.map((item) => (
+          <li
+            key={item.slug}
+            className="flex items-center justify-between gap-3 font-mono"
+          >
+            <span className="truncate">{item.slug}</span>
+            <span className="shrink-0 tabular-nums text-zinc-400 dark:text-zinc-500">
+              {item.distance.toFixed(3)}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

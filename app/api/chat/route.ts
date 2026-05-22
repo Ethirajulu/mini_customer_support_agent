@@ -88,8 +88,22 @@ export async function POST(req: Request) {
   const articlesBlock = buildArticlesBlock(chunks);
   const system = buildSupportSystemPrompt(articlesBlock);
 
+  const sources = chunks.map((c) => ({
+    slug: c.slug,
+    title: c.title,
+    distance: Number(c.distance.toFixed(3)),
+  }));
+
   const stream = createUIMessageStream({
     execute: async ({ writer }) => {
+      // Send sources immediately — the client can render them while the
+      // LLM is still streaming text. Order in `parts[]` doesn't dictate
+      // visual order; the client decides where to render data parts.
+      writer.write({
+        type: "data-sources",
+        data: { items: sources },
+      });
+
       const textId = crypto.randomUUID();
       writer.write({ type: "text-start", id: textId });
 
