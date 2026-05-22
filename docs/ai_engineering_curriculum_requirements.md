@@ -39,6 +39,20 @@ By the end you'll have:
 
 **Swap rules:** if any of the above blocks you for >2 hours, swap it out and keep moving. The stack is a tool, not the goal.
 
+### Stack note — what this run actually uses
+
+Starting in Phase 2, this run swapped to a fully-local stack. The curriculum table above still describes *what to learn*; the table below describes *what's actually wired up*. Source of truth for the running code is `CLAUDE.md`.
+
+| Layer | Curriculum default | This run uses |
+| ----- | ------------------ | ------------- |
+| LLM (chat) | Claude (Anthropic) | **Ollama `llama3.1:8b`** |
+| Embeddings | OpenAI `text-embedding-3-small` (1536-dim) | **Ollama `nomic-embed-text`** (768-dim) |
+| Vector DB | Supabase pgvector | **Local Postgres 16 + pgvector** via `docker-compose.yml` |
+| Hosting | Vercel | Local `pnpm dev` (deployment deferred) |
+| Observability | LangFuse | Deferred to Phase 4 |
+
+Reasoning: zero cost, fully offline, lets the focus stay on RAG/agent concepts rather than API key juggling. The swap rule still applies in reverse — if a local model blocks a phase for >2 hours, fall back to a cloud model for that phase only.
+
 ---
 
 ## Repository layout

@@ -20,14 +20,28 @@ The curriculum's "swap rules" matter: if a stack choice blocks the user for >2 h
 ## Commands
 
 ```bash
-pnpm dev          # next dev (Turbopack)
-pnpm build        # production build
-pnpm start        # serve the production build
-pnpm lint         # eslint
-npx tsc --noEmit  # type-check (no test runner is set up yet)
+pnpm dev                  # next dev (Turbopack)
+pnpm build                # production build
+pnpm start                # serve the production build
+pnpm lint                 # eslint
+npx tsc --noEmit          # type-check (no test runner is set up yet)
+
+# Phase 2+ (local stack)
+docker compose up -d      # start Postgres + pgvector (port 5432)
+docker compose down       # stop it (data persists in the pgdata volume)
+docker compose down -v    # stop AND wipe the DB
+docker exec -it orderflow-pg psql -U postgres -d orderflow   # psql shell
+ollama serve              # Ollama listens on :11434 (usually already running)
 ```
 
-Requires `ANTHROPIC_API_KEY` in `.env.local`. Later phases add `OPENAI_API_KEY`, Supabase keys, and LangFuse keys.
+### Env vars (`.env.local`)
+
+```
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/orderflow
+OLLAMA_BASE_URL=http://localhost:11434
+```
+
+The stack is intentionally local — no cloud API keys are required for Phases 2+. If a later phase needs cloud models (e.g. an LLM-judge in Phase 4), introduce that key only then.
 
 ## Stack pinning
 
@@ -39,6 +53,34 @@ This is **Next.js 16 + AI SDK v6 + React 19**. Several APIs have moved or change
 - Next.js 16: read `node_modules/next/dist/docs/01-app/` before writing routing, caching, or rendering code — see `AGENTS.md`.
 
 When the user references "useChat from `ai/react`" or other pre-v6 APIs from the curriculum doc, translate to the v6 equivalents above without breaking the spirit of the task.
+
+### Local-first stack (deviation from the curriculum doc)
+
+The curriculum doc names Supabase + OpenAI embeddings + Claude. The user is running fully local instead:
+
+| Curriculum | What this repo actually uses |
+|---|---|
+| Supabase pgvector | **Local Postgres 16 + pgvector** via `docker-compose.yml` |
+| OpenAI `text-embedding-3-small` (1536 dims) | **Ollama `nomic-embed-text`** (768 dims) |
+| Anthropic Claude (chat) | **Ollama `llama3.1:8b`** (chat) |
+
+Treat the curriculum as a spec for *what to learn*, not *which vendor to use*. The concepts (embeddings, similarity search, RAG, tool use, eval) are identical. If a local model blocks Phase 3+ for >2 hours, the swap rule applies — fall back to a cloud model for that phase only.
+
+**Critical:** the embedding dimension is `768` (nomic), not `1536` (OpenAI). The `articles.embedding` column must match (`vector(768)`).
+
+### Models in use
+
+Both run through the local Ollama daemon at `http://localhost:11434`. Verify with `ollama list`.
+
+| Role | Model | Size on disk | Output | Notes |
+|---|---|---|---|---|
+| Embeddings | `nomic-embed-text` | ~274 MB | 768-dim vector | Embedding-only model. Used by `scripts/embed-articles.ts` and by the chat route to embed the user's question at query time. |
+| Chat | `llama3.1:8b` | ~4.7 GB | streamed text | Replaces Claude as the agent's brain in Phase 2. Default 8K context; we keep prompts well under that. |
+
+**When changing models:**
+- The model strings are referenced in `lib/embeddings.ts` (or `lib/ollama.ts`) and the chat route. Keep them centralized — don't hard-code model names inside route handlers.
+- Changing the *embedding* model usually means re-running `pnpm embed` AND altering the SQL column dimension. A `768`-dim vector cannot be compared to a `1024`-dim vector — Postgres will error.
+- Changing the *chat* model is safe at any time; no DB impact.
 
 ## Architecture (Phase 1 — current)
 
@@ -73,6 +115,7 @@ In Phase 2 these will be chunked and embedded; keep them paragraph-friendly (don
 
 ## Things that look wrong but aren't
 
-- The `lib/anthropic.ts` `MODEL` constant uses a specific Haiku snapshot string. Don't "upgrade" it to a newer alias unless asked — model choice is part of the user's experiment.
-- The route re-reads articles on every request with no cache. Don't add caching in Phase 1 — feeling the cost is the point.
+- The `lib/anthropic.ts` `MODEL` constant uses a specific Haiku snapshot string. Don't "upgrade" it to a newer alias unless asked — model choice is part of the user's experiment. (This file will be replaced/renamed during the Phase 2 swap to Ollama.)
+- The route re-reads articles on every request with no cache. Don't add caching in Phase 1 — feeling the cost is the point. (Phase 2 replaces this with DB-backed retrieval, which obsoletes the concern.)
 - No tests, no CI config, no `vercel.json`. Phase 1 deliberately ships flat.
+- `docker-compose.yml` only defines Postgres — Ollama runs on the host, not in Docker, because the user already has models pulled locally and re-pulling inside a container would waste GB of bandwidth.
