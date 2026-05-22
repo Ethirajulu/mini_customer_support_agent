@@ -39,9 +39,11 @@ ollama serve              # Ollama listens on :11434 (usually already running)
 ```
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/orderflow
 OLLAMA_BASE_URL=http://localhost:11434
+CHAT_PROVIDER=ollama          # or "anthropic" — defaults to "ollama" if unset
+ANTHROPIC_API_KEY=...         # only required when CHAT_PROVIDER=anthropic
 ```
 
-The stack is intentionally local — no cloud API keys are required for Phases 2+. If a later phase needs cloud models (e.g. an LLM-judge in Phase 4), introduce that key only then.
+The stack is local by default — no cloud API keys are required to run the app. The Anthropic provider is kept available as a fallback / model-comparison option: set `CHAT_PROVIDER=anthropic` (with a valid `ANTHROPIC_API_KEY`) to flip back, useful for debugging "is this a model issue or a code issue?" and for Phase 4 model comparison.
 
 ## Stack pinning
 
@@ -115,7 +117,8 @@ In Phase 2 these will be chunked and embedded; keep them paragraph-friendly (don
 
 ## Things that look wrong but aren't
 
-- The `lib/anthropic.ts` `MODEL` constant uses a specific Haiku snapshot string. Don't "upgrade" it to a newer alias unless asked — model choice is part of the user's experiment. (This file will be replaced/renamed during the Phase 2 swap to Ollama.)
-- The route re-reads articles on every request with no cache. Don't add caching in Phase 1 — feeling the cost is the point. (Phase 2 replaces this with DB-backed retrieval, which obsoletes the concern.)
-- No tests, no CI config, no `vercel.json`. Phase 1 deliberately ships flat.
+- The `lib/llm-anthropic.ts` `ANTHROPIC_CHAT_MODEL` constant uses a specific Haiku snapshot string. Don't "upgrade" it to a newer alias unless asked.
+- `lib/llm.ts` exists alongside `lib/llm-ollama.ts` and `lib/llm-anthropic.ts` on purpose — the router pattern lets us flip providers via `CHAT_PROVIDER`. Don't collapse it into one file or hard-code one provider.
+- The route still re-reads articles on every request (Phase 1 behavior). Phase 2 will replace this with DB-backed retrieval — leave the disk-read in place until then.
+- No tests, no CI config, no `vercel.json`.
 - `docker-compose.yml` only defines Postgres — Ollama runs on the host, not in Docker, because the user already has models pulled locally and re-pulling inside a container would waste GB of bandwidth.
