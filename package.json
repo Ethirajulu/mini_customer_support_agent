@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "embed": "tsx --env-file=.env.local scripts/embed-articles.ts"
+    "embed": "tsx --env-file=.env.local scripts/embed-articles.ts",
+    "eval": "tsx --env-file=.env.local scripts/run-eval.ts"
   },
   "dependencies": {
     "@ai-sdk/react": "^3.0.191",

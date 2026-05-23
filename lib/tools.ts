@@ -170,6 +170,8 @@ const createTicket: Tool = {
 
 IMPORTANT: If the issue concerns a specific order (the user mentions an order ID like "ORD-1234" or refers to a purchase), you MUST call lookup_order_status FIRST before creating the ticket. The ticket description should include the verified order details (customer name, items, status, dates) from the lookup. Do NOT create order-related tickets based only on what the user said — verify first, then ticket.
 
+When the user has clearly described a concrete order problem (damaged item, wrong item, missing item, "I want a refund for X", etc.) and the order ID is verified, OPEN THE TICKET. Do not ask the user for additional clarification first — the human agent who picks up the ticket can ask follow-ups. Asking the user to repeat information they've already provided is bad customer service.
+
 Damage and "wrong item" reports should always be priority "high" because they involve product replacement or refund processing.
 
 Priority guidance:
