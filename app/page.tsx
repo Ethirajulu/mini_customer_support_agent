@@ -2,8 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import { useChat } from "@ai-sdk/react";
-import { DefaultChatTransport } from "ai";
-import { SUPPORT_REFUSAL } from "@/lib/prompts";
+import { DefaultChatTransport, type UIMessage } from "ai";
 
 export default function Home() {
   const { messages, sendMessage, status, error, stop } = useChat({
@@ -48,42 +47,9 @@ export default function Home() {
             <EmptyState onPick={(prompt) => sendMessage({ text: prompt })} />
           )}
 
-          {messages.map((message) => {
-            const textParts = message.parts.filter((p) => p.type === "text");
-            const sourcesPart = message.parts.find(
-              (p) => p.type === "data-sources",
-            ) as
-              | {
-                  type: "data-sources";
-                  data: {
-                    items: { slug: string; title: string; distance: number }[];
-                  };
-                }
-              | undefined;
-
-            // Suppress sources when the assistant's answer IS the refusal
-            // template — retrieval ran but didn't help, so showing sources
-            // would just confuse the user.
-            const fullText = textParts
-              .map((p) => (p.type === "text" ? p.text : ""))
-              .join("");
-            const isRefusal = fullText.includes(SUPPORT_REFUSAL);
-
-            return (
-              <Message key={message.id} role={message.role}>
-                {textParts.map((part, i) => (
-                  <span key={i} className="whitespace-pre-wrap">
-                    {part.type === "text" ? part.text : null}
-                  </span>
-                ))}
-                {sourcesPart &&
-                  message.role === "assistant" &&
-                  !isRefusal && (
-                    <Sources items={sourcesPart.data.items} />
-                  )}
-              </Message>
-            );
-          })}
+          {messages.map((message) => (
+            <MessageRow key={message.id} message={message} />
+          ))}
 
           {status === "submitted" && (
             <Message role="assistant">
@@ -131,6 +97,61 @@ export default function Home() {
   );
 }
 
+type ToolCallPart = {
+  type: "data-tool-call";
+  id?: string;
+  data: { name: string; input: Record<string, unknown> };
+};
+
+type ToolResultPart = {
+  type: "data-tool-result";
+  id?: string;
+  data:
+    | { ok: true; result: unknown }
+    | { ok: false; error: string };
+};
+
+function MessageRow({ message }: { message: UIMessage }) {
+  // Build a lookup of tool results by id so we can pair them with their
+  // matching tool_call when rendering. Results may arrive after the call,
+  // so the call renders in a loading state until its result lands.
+  const resultsById = new Map<string, ToolResultPart["data"]>();
+  for (const part of message.parts) {
+    if (part.type === "data-tool-result" && "id" in part && part.id) {
+      resultsById.set(part.id, (part as unknown as ToolResultPart).data);
+    }
+  }
+
+  return (
+    <Message role={message.role}>
+      {message.parts.map((part, i) => {
+        if (part.type === "text") {
+          return (
+            <span key={i} className="whitespace-pre-wrap">
+              {part.text}
+            </span>
+          );
+        }
+        if (part.type === "data-tool-call") {
+          const callPart = part as unknown as ToolCallPart;
+          const result = callPart.id ? resultsById.get(callPart.id) : undefined;
+          return (
+            <ToolBadge
+              key={i}
+              name={callPart.data.name}
+              input={callPart.data.input}
+              result={result}
+            />
+          );
+        }
+        // data-tool-result is rendered as part of its matching tool_call,
+        // so skip it here to avoid double rendering.
+        return null;
+      })}
+    </Message>
+  );
+}
+
 function Message({
   role,
   children,
@@ -154,6 +175,97 @@ function Message({
   );
 }
 
+function ToolBadge({
+  name,
+  input,
+  result,
+}: {
+  name: string;
+  input: Record<string, unknown>;
+  result: ToolResultPart["data"] | undefined;
+}) {
+  const isLoading = result === undefined;
+  const isError = result && !result.ok;
+
+  const headline = isLoading
+    ? toolLoadingLabel(name, input)
+    : isError
+      ? `Error: ${(result as { ok: false; error: string }).error}`
+      : toolSuccessLabel(name, (result as { ok: true; result: unknown }).result);
+
+  return (
+    <div
+      className={`my-2 rounded-lg border px-3 py-2 text-xs ${
+        isError
+          ? "border-red-200 bg-red-50 text-red-800 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300"
+          : "border-zinc-200 bg-zinc-50 text-zinc-700 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-300"
+      }`}
+    >
+      <div className="flex items-center gap-2 font-mono font-medium">
+        {isLoading ? <Spinner /> : isError ? <span>✗</span> : <span>✓</span>}
+        <span>{name}</span>
+      </div>
+      <div className="ml-5 mt-1 text-zinc-600 dark:text-zinc-400">
+        {headline}
+      </div>
+      {Object.keys(input).length > 0 && (
+        <div className="ml-5 mt-1 font-mono text-[11px] text-zinc-500 dark:text-zinc-500">
+          {formatInput(input)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function formatInput(input: Record<string, unknown>): string {
+  return Object.entries(input)
+    .map(([k, v]) => `${k}: ${JSON.stringify(v)}`)
+    .join(" · ");
+}
+
+function toolLoadingLabel(name: string, input: Record<string, unknown>): string {
+  switch (name) {
+    case "search_articles":
+      return `Searching help center for "${input.query ?? "..."}"`;
+    case "lookup_order_status":
+      return `Looking up ${input.order_id ?? "order"}`;
+    case "create_ticket":
+      return `Creating support ticket`;
+    case "escalate_to_human":
+      return `Escalating to human agent`;
+    default:
+      return `Running ${name}`;
+  }
+}
+
+function toolSuccessLabel(name: string, result: unknown): string {
+  const r = result as Record<string, unknown>;
+  switch (name) {
+    case "search_articles": {
+      const items = (r?.results as { slug: string }[]) ?? [];
+      if (items.length === 0) return "No articles found";
+      return `Found ${items.length} article${items.length > 1 ? "s" : ""}: ${items.map((i) => i.slug).join(", ")}`;
+    }
+    case "lookup_order_status": {
+      return `${r.order_id} · ${r.status} · ${r.customer_name}`;
+    }
+    case "create_ticket": {
+      return `${r.ticket_id} created (priority: ${r.priority})`;
+    }
+    case "escalate_to_human": {
+      return `Escalated · ${r.reason}`;
+    }
+    default:
+      return "Done";
+  }
+}
+
+function Spinner() {
+  return (
+    <span className="inline-block h-2.5 w-2.5 animate-spin rounded-full border-2 border-zinc-300 border-t-zinc-600 dark:border-zinc-700 dark:border-t-zinc-400" />
+  );
+}
+
 function TypingDots() {
   return (
     <span className="inline-flex gap-1">
@@ -164,40 +276,12 @@ function TypingDots() {
   );
 }
 
-function Sources({
-  items,
-}: {
-  items: { slug: string; title: string; distance: number }[];
-}) {
-  if (items.length === 0) return null;
-  return (
-    <div className="mt-3 border-t border-zinc-200 pt-2 text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
-      <span className="font-medium text-zinc-600 dark:text-zinc-300">
-        Sources
-      </span>
-      <ul className="mt-1 flex flex-col gap-0.5">
-        {items.map((item) => (
-          <li
-            key={item.slug}
-            className="flex items-center justify-between gap-3 font-mono"
-          >
-            <span className="truncate">{item.slug}</span>
-            <span className="shrink-0 tabular-nums text-zinc-400 dark:text-zinc-500">
-              {item.distance.toFixed(3)}
-            </span>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
 function EmptyState({ onPick }: { onPick: (prompt: string) => void }) {
   const suggestions = [
     "How do I refund an order?",
-    "Where's my package?",
-    "Cancel my subscription",
-    "I got the wrong item",
+    "What's the status of ORD-1002?",
+    "I want to talk to a human",
+    "I got the wrong item in ORD-1004",
   ];
   return (
     <div className="flex flex-col items-center gap-6 py-16 text-center">

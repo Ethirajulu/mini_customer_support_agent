@@ -3,19 +3,11 @@ import {
   createUIMessageStreamResponse,
   type UIMessage,
 } from "ai";
-import { streamChat, type ChatMessage } from "@/lib/llm";
-import { buildSupportSystemPrompt, SUPPORT_REFUSAL } from "@/lib/prompts";
-import { findRelevantChunks, type RetrievedChunk } from "@/lib/retrieval";
+import { runAgent, type AgentMessage } from "@/lib/agent";
+import { AGENT_SYSTEM_PROMPT } from "@/lib/prompts";
+import { TOOLS } from "@/lib/tools";
 
-export const maxDuration = 30;
-
-// Cosine-distance threshold above which we treat the query as out-of-scope
-// and refuse before invoking the LLM. Tune empirically; 0.5 is a reasonable
-// starting point given how our chunks cluster (see scripts/embed-articles.ts).
-const DISTANCE_THRESHOLD = 0.5;
-
-// How many chunks to include in the LLM context.
-const TOP_K = 3;
+export const maxDuration = 60;
 
 function uiMessageToText(message: UIMessage): string {
   return message.parts
@@ -26,95 +18,111 @@ function uiMessageToText(message: UIMessage): string {
     .join("");
 }
 
-function buildArticlesBlock(chunks: RetrievedChunk[]): string {
-  return chunks
-    .map(
-      (c) =>
-        `<article filename="${c.slug}.md" distance="${c.distance.toFixed(3)}">\n${c.content}\n</article>`,
-    )
-    .join("\n\n");
-}
-
-// Stream a fixed string back through the UI message stream protocol so the
-// client renders it identically to a real LLM response.
-function streamFixedResponse(text: string) {
-  const stream = createUIMessageStream({
-    execute: ({ writer }) => {
-      const id = crypto.randomUUID();
-      writer.write({ type: "text-start", id });
-      writer.write({ type: "text-delta", id, delta: text });
-      writer.write({ type: "text-end", id });
-    },
-  });
-  return createUIMessageStreamResponse({ stream });
-}
-
 export async function POST(req: Request) {
   const { messages }: { messages: UIMessage[] } = await req.json();
 
-  const chatMessages: ChatMessage[] = messages
+  // Convert UI messages to plain {role, content} for the agent.
+  // Multi-turn tool-call history (assistant tool_use blocks + user tool_result
+  // blocks) is reconstructed each turn from scratch — we don't persist tool
+  // history across requests in Phase 3. The visible user/assistant text is
+  // enough for the model to remember the conversation thread.
+  const agentMessages: AgentMessage[] = messages
     .filter((m) => m.role === "user" || m.role === "assistant")
     .map((m) => ({
       role: m.role as "user" | "assistant",
       content: uiMessageToText(m),
     }))
-    .filter((m) => m.content.length > 0);
+    .filter((m) => typeof m.content === "string" && m.content.length > 0);
 
-  const lastUser = [...chatMessages].reverse().find((m) => m.role === "user");
+  const lastUser = [...agentMessages].reverse().find((m) => m.role === "user");
   if (!lastUser) {
     return new Response("No user message in conversation", { status: 400 });
   }
 
-  // Retrieval step — embed the query, find nearest chunks
-  const chunks = await findRelevantChunks(lastUser.content, TOP_K);
-  const bestDistance = chunks[0]?.distance ?? Infinity;
-
-  console.log(`[chat] query: ${JSON.stringify(lastUser.content)}`);
-  console.log(
-    `[chat] retrieved:`,
-    chunks.map((c) => `${c.slug} (${c.distance.toFixed(3)})`).join(", "),
-  );
-
-  // Distance gate — if even the best match is too far, this is out-of-scope.
-  // Skip the LLM entirely. Architecture beats prompting for refusal compliance.
-  if (bestDistance > DISTANCE_THRESHOLD) {
-    console.log(
-      `[chat] out-of-scope (best=${bestDistance.toFixed(3)} > ${DISTANCE_THRESHOLD}) — refusing without LLM`,
-    );
-    return streamFixedResponse(SUPPORT_REFUSAL);
-  }
-
-  // In-scope — build a tight context from just the retrieved chunks
-  const articlesBlock = buildArticlesBlock(chunks);
-  const system = buildSupportSystemPrompt(articlesBlock);
-
-  const sources = chunks.map((c) => ({
-    slug: c.slug,
-    title: c.title,
-    distance: Number(c.distance.toFixed(3)),
-  }));
+  console.log(`[chat] query: ${JSON.stringify(uiMessageToText(messages[messages.length - 1]))}`);
 
   const stream = createUIMessageStream({
     execute: async ({ writer }) => {
-      // Send sources immediately — the client can render them while the
-      // LLM is still streaming text. Order in `parts[]` doesn't dictate
-      // visual order; the client decides where to render data parts.
-      writer.write({
-        type: "data-sources",
-        data: { items: sources },
-      });
+      // We use a fresh text-block ID for each "text segment" between tool
+      // calls — assistant turns can interleave "let me check…" text with a
+      // tool_use, then more text after the tool result. Multiple text blocks
+      // keeps the UI rendering clean.
+      let currentTextId: string | null = null;
 
-      const textId = crypto.randomUUID();
-      writer.write({ type: "text-start", id: textId });
+      const startText = () => {
+        if (currentTextId) return;
+        currentTextId = crypto.randomUUID();
+        writer.write({ type: "text-start", id: currentTextId });
+      };
 
-      for await (const delta of streamChat({
-        system,
-        messages: chatMessages,
-      })) {
-        writer.write({ type: "text-delta", id: textId, delta });
+      const endText = () => {
+        if (currentTextId) {
+          writer.write({ type: "text-end", id: currentTextId });
+          currentTextId = null;
+        }
+      };
+
+      try {
+        for await (const event of runAgent({
+          system: AGENT_SYSTEM_PROMPT,
+          messages: agentMessages,
+          tools: TOOLS,
+          maxIterations: 6,
+        })) {
+          if (event.type === "text") {
+            if (!currentTextId) startText();
+            writer.write({
+              type: "text-delta",
+              id: currentTextId!,
+              delta: event.delta,
+            });
+          } else if (event.type === "tool_call") {
+            endText();
+            console.log(
+              `[agent] tool_call: ${event.name}(${JSON.stringify(event.input)})`,
+            );
+            writer.write({
+              type: "data-tool-call",
+              id: event.tool_use_id,
+              data: {
+                name: event.name,
+                input: event.input,
+              },
+            });
+          } else if (event.type === "tool_result") {
+            console.log(
+              `[agent] tool_result: ${event.result.ok ? "ok" : "ERR " + event.result.error}`,
+            );
+            writer.write({
+              type: "data-tool-result",
+              id: event.tool_use_id,
+              data: {
+                ok: event.result.ok,
+                ...(event.result.ok
+                  ? { result: event.result.data }
+                  : { error: event.result.error }),
+              },
+            });
+          } else if (event.type === "done") {
+            endText();
+            console.log(
+              `[agent] done after ${event.iterations} iteration(s) (reason: ${event.reason})`,
+            );
+          }
+        }
+      } catch (err) {
+        console.error("[chat] agent error", err);
+        endText();
+        const id = crypto.randomUUID();
+        writer.write({ type: "text-start", id });
+        writer.write({
+          type: "text-delta",
+          id,
+          delta:
+            "Sorry — something went wrong on our end. Please try again or email support@example.com.",
+        });
+        writer.write({ type: "text-end", id });
       }
-
-      writer.write({ type: "text-end", id: textId });
     },
     onError: (error) => {
       console.error("[chat] stream error", error);
