@@ -125,6 +125,10 @@ Captured at the end of each blog post in the project, but the highlights:
 - **Track per-case token cost in the report** — cost variance is itself a signal worth surfacing.
 - **Always instrument every LLM call**, including the judge — almost forgot, and it's the one most worth seeing.
 
+## What's next
+
+The follow-up project — applying these patterns to an internal-developer-tooling problem — lives at [**agentic-debugger**](https://github.com/Ethirajulu/agentic-debugger). Same author, same patterns (RAG, agents, eval, observability), but built around the [Model Context Protocol](https://modelcontextprotocol.io) for orchestrating across logs, code, and customer data.
+
 ## Reference
 
 - Blog series (one post per phase): [kumizhi-ai.com/blog](https://www.kumizhi-ai.com/blog)
