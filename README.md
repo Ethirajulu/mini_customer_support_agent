@@ -4,6 +4,8 @@ A customer-support AI agent for a fictional e-commerce company, built across a f
 
 > This is a **learning project**, not a product. The whole point is to feel why each pattern exists by living with its limits before reaching for the next one.
 
+**Read the full series →** [kumizhi-ai.com/blog](https://www.kumizhi-ai.com/blog) — each phase has a deeper writeup covering failures, fixes, and what I'd do differently.
+
 ## What it does
 
 - Chats with customers about orders, refunds, returns, shipping, subscriptions, and account questions
@@ -125,5 +127,6 @@ Captured at the end of each blog post in the project, but the highlights:
 
 ## Reference
 
+- Blog series (one post per phase): [kumizhi-ai.com/blog](https://www.kumizhi-ai.com/blog)
 - Curriculum doc: [`docs/ai_engineering_curriculum_requirements.md`](docs/ai_engineering_curriculum_requirements.md)
 - Repo-level instructions for AI assistants (Claude Code, etc.): [`CLAUDE.md`](CLAUDE.md)
