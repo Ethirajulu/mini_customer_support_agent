@@ -231,5 +231,38 @@ export async function judge(
 
   generation?.end({ output: verdict, usage });
 
+  // Push the verdict as proper LangFuse Score entities on the parent trace.
+  // Each rubric dimension becomes a filterable, chartable Boolean score
+  // (0/1). The overall pass also gets a score, with the judge's reasoning
+  // attached as a comment so you can read it from the trace's Scores tab.
+  if (trace) {
+    trace.score({
+      name: "correctness",
+      value: scores.correctness ? 1 : 0,
+      dataType: "BOOLEAN",
+    });
+    trace.score({
+      name: "no_hallucination",
+      value: scores.no_hallucination ? 1 : 0,
+      dataType: "BOOLEAN",
+    });
+    trace.score({
+      name: "appropriate_action",
+      value: scores.appropriate_action ? 1 : 0,
+      dataType: "BOOLEAN",
+    });
+    trace.score({
+      name: "helpful_tone",
+      value: scores.helpful_tone ? 1 : 0,
+      dataType: "BOOLEAN",
+    });
+    trace.score({
+      name: "judge_pass",
+      value: verdict.pass ? 1 : 0,
+      dataType: "BOOLEAN",
+      comment: verdict.reasoning,
+    });
+  }
+
   return verdict;
 }
