@@ -36,14 +36,33 @@ ollama serve              # Ollama listens on :11434 (usually already running)
 
 ### Env vars (`.env.local`)
 
+See `.env.example` for the full, documented list. Quick reference:
+
 ```
+# Provider switches
+CHAT_PROVIDER=ollama                                   # or "anthropic"
+JUDGE_PROVIDER=anthropic                               # or "ollama"
+ANTHROPIC_API_KEY=...                                  # required if either provider is "anthropic"
+
+# Local infra
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/orderflow
 OLLAMA_BASE_URL=http://localhost:11434
-CHAT_PROVIDER=ollama          # or "anthropic" — defaults to "ollama" if unset
-ANTHROPIC_API_KEY=...         # only required when CHAT_PROVIDER=anthropic
+
+# Model overrides (optional, sensible defaults baked in)
+ANTHROPIC_CHAT_MODEL=claude-haiku-4-5-20251001
+OLLAMA_CHAT_MODEL=llama3.1:8b
+ANTHROPIC_JUDGE_MODEL=claude-sonnet-4-6
+OLLAMA_JUDGE_MODEL=qwen2.5:14b
+
+# LangFuse (optional — tracing no-ops if unset)
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_BASE_URL=http://localhost:3001
 ```
 
-The stack is local by default — no cloud API keys are required to run the app. The Anthropic provider is kept available as a fallback / model-comparison option: set `CHAT_PROVIDER=anthropic` (with a valid `ANTHROPIC_API_KEY`) to flip back, useful for debugging "is this a model issue or a code issue?" and for Phase 4 model comparison.
+The stack is fully local-capable — set `CHAT_PROVIDER=ollama` AND `JUDGE_PROVIDER=ollama` to run with zero cloud calls. The Anthropic key is only required when one of the providers is `anthropic`. Model constants in `lib/llm-anthropic.ts`, `lib/llm-ollama.ts`, and `lib/judge.ts` all read from env with these as fallback defaults — change a model by editing `.env.local`, not source code.
+
+**For provider-comparison eval runs, keep `JUDGE_PROVIDER` constant** across runs — switching the judge changes the scoring contract and any agent-quality deltas you measure get tangled with judge-quality deltas.
 
 ## Stack pinning
 

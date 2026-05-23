@@ -3,7 +3,8 @@ import type { ChatStreamOpts } from "./llm";
 const OLLAMA_BASE_URL =
   process.env.OLLAMA_BASE_URL ?? "http://localhost:11434";
 
-export const OLLAMA_CHAT_MODEL = "llama3.1:8b";
+export const OLLAMA_CHAT_MODEL =
+  process.env.OLLAMA_CHAT_MODEL ?? "llama3.1:8b";
 
 export async function* streamChatOllama(
   opts: ChatStreamOpts,

@@ -6,6 +6,7 @@ import {
 import { runAgent, type AgentMessage } from "@/lib/agent";
 import { AGENT_SYSTEM_PROMPT } from "@/lib/prompts";
 import { TOOLS } from "@/lib/tools";
+import { trace, flush } from "@/lib/tracing";
 
 export const maxDuration = 60;
 
@@ -39,7 +40,15 @@ export async function POST(req: Request) {
     return new Response("No user message in conversation", { status: 400 });
   }
 
-  console.log(`[chat] query: ${JSON.stringify(uiMessageToText(messages[messages.length - 1]))}`);
+  const userQuery = uiMessageToText(messages[messages.length - 1]);
+  console.log(`[chat] query: ${JSON.stringify(userQuery)}`);
+
+  const chatTrace = trace({
+    name: "chat",
+    input: userQuery,
+    tags: ["chat"],
+    metadata: { turn_count: agentMessages.length },
+  });
 
   const stream = createUIMessageStream({
     execute: async ({ writer }) => {
@@ -48,6 +57,7 @@ export async function POST(req: Request) {
       // tool_use, then more text after the tool result. Multiple text blocks
       // keeps the UI rendering clean.
       let currentTextId: string | null = null;
+      let assembledOutput = "";
 
       const startText = () => {
         if (currentTextId) return;
@@ -68,9 +78,11 @@ export async function POST(req: Request) {
           messages: agentMessages,
           tools: TOOLS,
           maxIterations: 6,
+          trace: chatTrace,
         })) {
           if (event.type === "text") {
             if (!currentTextId) startText();
+            assembledOutput += event.delta;
             writer.write({
               type: "text-delta",
               id: currentTextId!,
@@ -122,6 +134,9 @@ export async function POST(req: Request) {
             "Sorry — something went wrong on our end. Please try again or email support@example.com.",
         });
         writer.write({ type: "text-end", id });
+      } finally {
+        chatTrace?.update({ output: assembledOutput });
+        await flush();
       }
     },
     onError: (error) => {

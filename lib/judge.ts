@@ -1,11 +1,35 @@
 import Anthropic from "@anthropic-ai/sdk";
+import type { Trace } from "./tracing";
 
 const anthropic = new Anthropic();
 
-// Use a stronger model for the judge than for the agent. Same-model bias
-// (Haiku judging Haiku) is real — Sonnet gives us a more honest evaluation.
-// ~$0.13 per 20-case eval run, vs ~$0.03 for Haiku.
-const JUDGE_MODEL = "claude-sonnet-4-6";
+// ───── Judge provider config ─────
+// Default: Anthropic (stronger, less biased when judging Haiku/Llama agents).
+// Set JUDGE_PROVIDER=ollama to use a local model — slower, less reliable,
+// but $0 and offline. For honest cross-provider eval comparisons, keep the
+// judge constant across runs.
+type JudgeProvider = "anthropic" | "ollama";
+
+function currentJudgeProvider(): JudgeProvider {
+  const p = process.env.JUDGE_PROVIDER ?? "anthropic";
+  if (p !== "anthropic" && p !== "ollama") {
+    throw new Error(
+      `Unknown JUDGE_PROVIDER "${p}" — must be "anthropic" or "ollama"`,
+    );
+  }
+  return p;
+}
+
+const ANTHROPIC_JUDGE_MODEL =
+  process.env.ANTHROPIC_JUDGE_MODEL ?? "claude-sonnet-4-6";
+const OLLAMA_JUDGE_MODEL =
+  process.env.OLLAMA_JUDGE_MODEL ?? "qwen2.5:14b";
+const OLLAMA_BASE_URL =
+  process.env.OLLAMA_BASE_URL ?? "http://localhost:11434";
+
+function judgeModelName(provider: JudgeProvider): string {
+  return provider === "ollama" ? OLLAMA_JUDGE_MODEL : ANTHROPIC_JUDGE_MODEL;
+}
 
 export type ToolTrace = {
   name: string;
@@ -88,24 +112,100 @@ Return ONLY a JSON object, no markdown fence, no preamble. Exact format:
 }`;
 }
 
-export async function judge(input: JudgeInput): Promise<JudgeVerdict> {
-  const response = await anthropic.messages.create({
-    model: JUDGE_MODEL,
-    max_tokens: 512,
-    messages: [{ role: "user", content: buildJudgePrompt(input) }],
-  });
+type JudgeCallResult = {
+  text: string;
+  usage: { input?: number; output?: number };
+};
 
+async function callJudgeAnthropic(prompt: string): Promise<JudgeCallResult> {
+  const response = await anthropic.messages.create({
+    model: ANTHROPIC_JUDGE_MODEL,
+    max_tokens: 512,
+    temperature: 0, // deterministic scoring
+    messages: [{ role: "user", content: prompt }],
+  });
   const text = response.content
     .filter((b): b is Anthropic.TextBlock => b.type === "text")
     .map((b) => b.text)
     .join("");
+  return {
+    text,
+    usage: {
+      input: response.usage?.input_tokens,
+      output: response.usage?.output_tokens,
+    },
+  };
+}
 
-  // Extract the JSON object — be defensive in case the model adds a preamble
-  // despite our "no preamble" instruction.
+async function callJudgeOllama(prompt: string): Promise<JudgeCallResult> {
+  const res = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: OLLAMA_JUDGE_MODEL,
+      messages: [{ role: "user", content: prompt }],
+      stream: false,
+      // Ollama's `format: "json"` constrains output to valid JSON — huge
+      // help for the strict parsing we do below.
+      format: "json",
+      options: { temperature: 0, num_predict: 512 },
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(
+      `Ollama /api/chat failed for judge: ${res.status} ${await res.text()}`,
+    );
+  }
+  const data = (await res.json()) as {
+    message?: { content?: string };
+    prompt_eval_count?: number;
+    eval_count?: number;
+  };
+  return {
+    text: data.message?.content ?? "",
+    usage: {
+      input: data.prompt_eval_count,
+      output: data.eval_count,
+    },
+  };
+}
+
+export async function judge(
+  input: JudgeInput,
+  trace?: Trace,
+): Promise<JudgeVerdict> {
+  const provider = currentJudgeProvider();
+  const model = judgeModelName(provider);
+
+  // Nest the judge as a generation under whatever trace the caller provided
+  // (the eval-case trace, typically). Same input/output/usage shape as the
+  // agent's generations, so the LangFuse UI shows them uniformly.
+  const generation = trace?.generation({
+    name: "judge",
+    model,
+    input: {
+      user_input: input.user_input,
+      expected_behavior: input.expected_behavior,
+      tools_called: input.tools_called,
+      agent_response: input.final_response,
+    },
+  });
+
+  const prompt = buildJudgePrompt(input);
+  const { text, usage } =
+    provider === "ollama"
+      ? await callJudgeOllama(prompt)
+      : await callJudgeAnthropic(prompt);
+
+  // Extract the JSON object — be defensive even with format=json since some
+  // models still wrap responses in fences or add stray characters.
   const match = text.match(/\{[\s\S]*\}/);
   if (!match) {
+    generation?.end({
+      output: { error: "Judge did not return JSON", raw: text.slice(0, 200) },
+    });
     throw new Error(
-      `Judge did not return JSON. First 200 chars: ${text.slice(0, 200)}`,
+      `Judge (${model}) did not return JSON. First 200 chars: ${text.slice(0, 200)}`,
     );
   }
 
@@ -120,10 +220,16 @@ export async function judge(input: JudgeInput): Promise<JudgeVerdict> {
     helpful_tone: !!parsed.helpful_tone,
   };
 
-  return {
+  const verdict: JudgeVerdict = {
     scores,
     reasoning:
-      typeof parsed.reasoning === "string" ? parsed.reasoning : "(no reasoning provided)",
+      typeof parsed.reasoning === "string"
+        ? parsed.reasoning
+        : "(no reasoning provided)",
     pass: Object.values(scores).every(Boolean),
   };
+
+  generation?.end({ output: verdict, usage });
+
+  return verdict;
 }

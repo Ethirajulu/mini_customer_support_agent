@@ -5,6 +5,7 @@ import { TOOLS } from "@/lib/tools";
 import { AGENT_SYSTEM_PROMPT } from "@/lib/prompts";
 import { judge, type JudgeVerdict, type ToolTrace } from "@/lib/judge";
 import { ANTHROPIC_CHAT_MODEL } from "@/lib/llm-anthropic";
+import { trace, flush, type Trace } from "@/lib/tracing";
 
 // ───── Types ─────
 
@@ -96,7 +97,7 @@ function formatFailReasons(score: DeterministicScore): string[] {
 
 // ───── Single-case runner ─────
 
-async function runCase(c: GoldenCase): Promise<CaseRun> {
+async function runCase(c: GoldenCase, caseTrace: Trace): Promise<CaseRun> {
   const t0 = Date.now();
   const toolsCalled: string[] = [];
   const toolTraces: ToolTrace[] = [];
@@ -113,6 +114,7 @@ async function runCase(c: GoldenCase): Promise<CaseRun> {
       messages: [{ role: "user", content: c.input }],
       tools: TOOLS,
       maxIterations: 6,
+      trace: caseTrace,
     })) {
       if (event.type === "text") {
         finalText += event.delta;
@@ -134,6 +136,9 @@ async function runCase(c: GoldenCase): Promise<CaseRun> {
       }
     }
   } catch (err) {
+    caseTrace?.update({
+      output: finalText || `ERROR: ${err instanceof Error ? err.message : String(err)}`,
+    });
     return {
       case: c,
       finalText,
@@ -145,6 +150,8 @@ async function runCase(c: GoldenCase): Promise<CaseRun> {
       error: err instanceof Error ? err.message : String(err),
     };
   }
+
+  caseTrace?.update({ output: finalText });
 
   return {
     case: c,
@@ -182,7 +189,16 @@ async function main() {
 
   for (const c of cases) {
     process.stdout.write(`  ${c.id.padEnd(34)} `);
-    const run = await runCase(c);
+
+    // One LangFuse trace per case — shared by agent generations AND the judge
+    const caseTrace = trace({
+      name: "eval-case",
+      input: c.input,
+      metadata: { case_id: c.id, category: c.category },
+      tags: ["eval", c.category],
+    });
+
+    const run = await runCase(c, caseTrace);
 
     if (run.error) {
       console.log(`ERROR · ${run.latencyMs}ms · ${run.error}`);
@@ -206,13 +222,16 @@ async function main() {
     // Run the LLM judge — wrap in try so one bad judge call doesn't kill the run
     let verdict: CaseResult["judge"] = null;
     try {
-      verdict = await judge({
-        user_input: c.input,
-        expected_behavior: c.expected_behavior,
-        tools_called: run.toolsCalled,
-        tool_traces: run.toolTraces,
-        final_response: run.finalText,
-      });
+      verdict = await judge(
+        {
+          user_input: c.input,
+          expected_behavior: c.expected_behavior,
+          tools_called: run.toolsCalled,
+          tool_traces: run.toolTraces,
+          final_response: run.finalText,
+        },
+        caseTrace,
+      );
     } catch (err) {
       verdict = { error: err instanceof Error ? err.message : String(err) };
     }
@@ -315,6 +334,11 @@ async function main() {
     join(process.cwd(), "evals", "results"),
   );
   console.log(`\nReport written to ${reportPath}`);
+
+  // Flush LangFuse events to the server before the script exits, otherwise
+  // queued traces are lost.
+  await flush();
+  console.log(`LangFuse traces flushed.`);
 }
 
 // ───── Report writer ─────

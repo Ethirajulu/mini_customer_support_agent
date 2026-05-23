@@ -3,7 +3,8 @@ import type { ChatStreamOpts } from "./llm";
 
 const anthropic = new Anthropic();
 
-export const ANTHROPIC_CHAT_MODEL = "claude-haiku-4-5-20251001";
+export const ANTHROPIC_CHAT_MODEL =
+  process.env.ANTHROPIC_CHAT_MODEL ?? "claude-haiku-4-5-20251001";
 
 export async function* streamChatAnthropic(
   opts: ChatStreamOpts,
