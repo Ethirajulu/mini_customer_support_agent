@@ -1,36 +1,129 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# OrderFlow Support Agent
 
-## Getting Started
+A customer-support AI agent for a fictional e-commerce company, built across a four-weekend AI engineering curriculum. Each phase deliberately starts with the dumbest possible version of a real production technique, then iterates until the pattern's strengths and failure modes are clear.
 
-First, run the development server:
+> This is a **learning project**, not a product. The whole point is to feel why each pattern exists by living with its limits before reaching for the next one.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+## What it does
+
+- Chats with customers about orders, refunds, returns, shipping, subscriptions, and account questions
+- Answers from a help-center knowledge base (~19 articles in `content/help-articles/`)
+- Looks up real (mock) order data, opens support tickets, escalates to humans
+- Refuses out-of-scope questions (weather, math, jokes) without inventing answers
+- Is **measurably evaluated** against a hand-curated golden set with deterministic + LLM-as-judge scoring
+
+## The four phases
+
+| Phase | What was built | The lesson |
+| --- | --- | --- |
+| **1 — Plain LLM** | Chat UI + Anthropic streaming + every help article pasted into the system prompt | Feel why "stuff everything in the prompt" doesn't scale past ~50 articles |
+| **2 — RAG** | pgvector + Ollama embeddings + retrieval-as-safety-gate + sources in the UI | Embeddings are addresses to meaning; the index optimization is for scale, not correctness |
+| **3 — Agents & tools** | ReAct loop + tool calling (`search_articles`, `lookup_order_status`, `create_ticket`, `escalate_to_human`) + tool-call UI badges | Tool descriptions are the new prompts; "keep the rule where the rule fires" |
+| **4 — Eval & observability** | Golden set (20 cases) + deterministic scoring + LLM-as-judge (Sonnet) + self-hosted LangFuse + markdown report | Iterate the test as much as the agent — it's an artifact you wrote and can get wrong |
+
+The full curriculum and acceptance criteria live in [`docs/ai_engineering_curriculum_requirements.md`](docs/ai_engineering_curriculum_requirements.md).
+
+## Architecture
+
+```
+app/api/chat/route.ts        Next.js route, streams agent events to the UI
+app/page.tsx                 Chat UI with inline tool-call badges
+lib/
+  agent.ts                   Provider-agnostic dispatcher
+  agent-anthropic.ts         Anthropic implementation
+  agent-ollama.ts            Ollama implementation
+  llm-anthropic.ts           Streaming chat helper (Anthropic SDK)
+  llm-ollama.ts              Streaming chat helper (Ollama /api/chat)
+  tools.ts                   The 4 tools — generic schema, provider adapters translate
+  retrieval.ts               Vector search via pgvector
+  embeddings.ts              Ollama nomic-embed-text wrapper
+  judge.ts                   LLM-as-judge with strict rubrics (Anthropic or Ollama)
+  tracing.ts                 LangFuse SDK wrapper, no-ops if not configured
+  prompts.ts                 Centralized system prompts
+content/help-articles/       19 markdown articles with YAML frontmatter
+data/
+  orders.json                Mock order data
+  tickets.json               Created by the agent at runtime (gitignored)
+evals/
+  golden-set.json            20 hand-written test cases across 5 categories
+  results/                   Markdown reports per eval run
+scripts/
+  embed-articles.ts          Re-index articles into pgvector (idempotent)
+  run-eval.ts                Run the golden set, score it, write a report
+docker-compose.yml           Local Postgres + pgvector
+docker-compose.langfuse.yml  Self-hosted LangFuse stack (postgres, clickhouse, redis, minio, web, worker)
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Stack
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+- **Next.js 16** (App Router) + **AI SDK v6** + **React 19**
+- **Anthropic SDK** (Claude Haiku 4.5 for agent, Sonnet 4.6 for judge)
+- **Ollama** (`llama3.1:8b` agent, `nomic-embed-text` embeddings, optional `qwen2.5:14b` judge)
+- **Postgres 16 + pgvector** via Docker
+- **LangFuse v3** self-hosted via Docker for trace-level observability
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Provider switches via `CHAT_PROVIDER` (`anthropic` | `ollama`) and `JUDGE_PROVIDER` env vars — see [`.env.example`](.env.example).
 
-## Learn More
+## Quick start
 
-To learn more about Next.js, take a look at the following resources:
+Requires Node 24, pnpm, Docker, and Ollama installed locally.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```bash
+# 1. Install deps
+pnpm install
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+# 2. Configure env (use defaults for fully-local stack)
+cp .env.example .env.local
+# Edit .env.local — add ANTHROPIC_API_KEY if using CHAT_PROVIDER=anthropic or running evals
 
-## Deploy on Vercel
+# 3. Pull Ollama models
+ollama pull nomic-embed-text
+ollama pull llama3.1:8b
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+# 4. Start local Postgres + pgvector
+docker compose up -d
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+# 5. Initialize the schema
+docker exec -i orderflow-pg psql -U postgres -d orderflow < db/schema.sql
+
+# 6. Embed the help articles into the vector DB
+pnpm embed
+
+# 7. Run the dev server
+pnpm dev
+```
+
+Open [http://localhost:3000](http://localhost:3000).
+
+## Run the eval
+
+```bash
+pnpm eval
+```
+
+Outputs a per-case PASS/FAIL summary to the console and writes a full markdown report to `evals/results/<timestamp>.md`. Requires `ANTHROPIC_API_KEY` (the LLM-as-judge always uses Anthropic by default).
+
+## Optional — self-hosted LangFuse
+
+```bash
+docker compose -f docker-compose.langfuse.yml up -d
+# Open http://localhost:3001
+# Login: dev@example.com / changeme123
+# Settings → API Keys → Create, add the public + secret keys to .env.local
+```
+
+After that, every chat request and every eval case writes a full trace to LangFuse — agent generations, tool spans, judge generation, and per-rubric Boolean scores.
+
+## What I'd do differently next time
+
+Captured at the end of each blog post in the project, but the highlights:
+
+- Run each eval case **3× and report worst-case** — single-run pass rates are noisy by ~±10%.
+- **Pass the system prompt to the judge** — several "hallucination" flags were the agent following system-prompt rules the judge couldn't see.
+- **Track per-case token cost in the report** — cost variance is itself a signal worth surfacing.
+- **Always instrument every LLM call**, including the judge — almost forgot, and it's the one most worth seeing.
+
+## Reference
+
+- Curriculum doc: [`docs/ai_engineering_curriculum_requirements.md`](docs/ai_engineering_curriculum_requirements.md)
+- Repo-level instructions for AI assistants (Claude Code, etc.): [`CLAUDE.md`](CLAUDE.md)
